@@ -20,6 +20,8 @@
 //! Enable `io-uring` on Linux and run all client operations inside an existing
 //! compio runtime. No Tokio runtime is started. The existing default clients
 //! and high-level producer/consumer helpers retain their Tokio requirement.
+//! Operations require a live compio runtime and can panic outside it. Shut the
+//! client down before dropping that runtime; constructors perform no I/O.
 
 use crate::binary::impl_binary_client;
 use crate::driver::OperationDriver;

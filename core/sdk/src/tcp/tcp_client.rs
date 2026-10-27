@@ -106,7 +106,9 @@ impl TcpClient {
     }
 }
 
-pub(crate) fn config_from_connection_string(connection_string: &str) -> Result<TcpClientConfig, IggyError> {
+pub(crate) fn config_from_connection_string(
+    connection_string: &str,
+) -> Result<TcpClientConfig, IggyError> {
     if ConnectionStringUtils::parse_protocol(connection_string)? != TransportProtocol::Tcp {
         return Err(IggyError::InvalidConnectionString);
     }

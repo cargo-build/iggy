@@ -19,6 +19,7 @@ use crate::diagnostic_events::diagnostic_event_channel;
 use crate::driver::{DeferredLease, MAX_DEFERRED_REQUESTS, fetch_error_is_uncertain};
 use crate::http::http_transport::HttpTransport;
 use crate::prelude::{Client, HttpClientConfig, IggyError, NonZeroIggyDuration};
+use crate::runtime::Runtime;
 use crate::vsr::LIFECYCLE_RETRY_MAX_INTERVAL;
 use async_broadcast::{Receiver, Sender};
 use async_trait::async_trait;
@@ -310,7 +311,7 @@ impl HttpClient {
         } else {
             None
         };
-        let _permit = DeferredLease::acquire(&self.deferred_leases, deadline)
+        let _permit = DeferredLease::acquire(Runtime::Tokio, &self.deferred_leases, deadline)
             .await
             .map_err(DecodeError::without_record)?;
         let url = self.get_url(path).map_err(DecodeError::without_record)?;

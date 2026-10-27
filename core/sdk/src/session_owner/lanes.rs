@@ -344,7 +344,9 @@ impl SessionOwner {
                 Arc::clone(&lane.gate),
             )
         };
-        let guard = self.runtime().timeout_at(deadline, gate.lock_owned())
+        let guard = self
+            .runtime()
+            .timeout_at(deadline, gate.lock_owned())
             .await
             .map_err(|_| IggyError::TransientNotAccepted)?;
         ticket.guard = Some(guard);
@@ -415,7 +417,9 @@ impl SessionOwner {
                 })?;
             ticket.progress.push(progress);
         }
-        let guard = self.runtime().timeout_at(deadline, gate.lock_owned())
+        let guard = self
+            .runtime()
+            .timeout_at(deadline, gate.lock_owned())
             .await
             .map_err(|_| IggyError::OperationUncertain(op))?;
         ticket.guard = Some(guard);

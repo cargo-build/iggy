@@ -20,7 +20,10 @@ use crate::links::fake_cluster::{Answer, FakeCluster, UNANSWERED_CODE, node};
 use crate::runtime::Runtime;
 use crate::tcp::tcp_client::TcpClient;
 use bytes::Bytes;
-use iggy_common::{BinaryTransport, Client, ClientState, ClusterClient, IggyError, SystemClient, TcpClientConfig, UserClient, with_binary_deadline};
+use iggy_common::{
+    BinaryTransport, Client, ClientState, ClusterClient, IggyError, SystemClient, TcpClientConfig,
+    UserClient, with_binary_deadline,
+};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -67,15 +70,26 @@ impl Peer {
                 }
             });
         });
-        Self { address, cluster, connections, stop: Some(stop), thread: Some(thread) }
+        Self {
+            address,
+            cluster,
+            connections,
+            stop: Some(stop),
+            thread: Some(thread),
+        }
     }
 
     fn client(&self) -> CompioTcpClient {
-        CompioTcpClient::from_connection_string(&format!("iggy://iggy:iggy@{}", self.address)).unwrap()
+        CompioTcpClient::from_connection_string(&format!("iggy://iggy:iggy@{}", self.address))
+            .unwrap()
     }
 
     fn cut_connections(&self) {
-        self.connections.lock().unwrap().drain(..).for_each(|task| task.abort());
+        self.connections
+            .lock()
+            .unwrap()
+            .drain(..)
+            .for_each(|task| task.abort());
     }
 }
 
@@ -111,10 +125,17 @@ fn given_native_compio_when_connecting_should_share_sessions_recover_and_shutdow
             client.ping().await.unwrap();
             let payload = vec![17; 3 * crate::links::test_support::DUPLEX_CAPACITY];
             const RAW_CODE: u32 = 777_777;
-            peer.cluster.script(&peer.address, RAW_CODE, [Answer::Body(payload.clone())]);
-            let reply = client.send_raw_with_response(RAW_CODE, Bytes::from(payload.clone())).await.unwrap();
+            peer.cluster
+                .script(&peer.address, RAW_CODE, [Answer::Body(payload.clone())]);
+            let reply = client
+                .send_raw_with_response(RAW_CODE, Bytes::from(payload.clone()))
+                .await
+                .unwrap();
             assert_eq!(reply.as_ref(), payload);
-            assert_eq!(peer.cluster.received(RAW_CODE).first().unwrap().body, payload);
+            assert_eq!(
+                peer.cluster.received(RAW_CODE).first().unwrap().body,
+                payload
+            );
             assert!(client.keepalive().await.unwrap());
             let session = client.driver.session().identity().unwrap();
 
@@ -129,8 +150,15 @@ fn given_native_compio_when_connecting_should_share_sessions_recover_and_shutdow
                 }
             }
             client.ping().await.unwrap();
-            assert_eq!(client.driver.session().identity().unwrap().session, session.session);
-            assert!(peer.cluster.count(iggy_binary_protocol::codes::BIND_SESSION_CODE) > 0);
+            assert_eq!(
+                client.driver.session().identity().unwrap().session,
+                session.session
+            );
+            assert!(
+                peer.cluster
+                    .count(iggy_binary_protocol::codes::BIND_SESSION_CODE)
+                    > 0
+            );
             assert!(tokio::runtime::Handle::try_current().is_err());
 
             client.disconnect().await.unwrap();
@@ -139,7 +167,9 @@ fn given_native_compio_when_connecting_should_share_sessions_recover_and_shutdow
             client.shutdown().await.unwrap();
             client.shutdown().await.unwrap();
             assert_eq!(client.connect().await, Err(IggyError::ClientShutdown));
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     });
 }
 
@@ -150,22 +180,34 @@ fn given_a_missing_reply_when_deadline_expires_should_keep_the_compio_connection
         compio::time::timeout(BUDGET, async {
             let client = peer.client();
             client.connect().await.unwrap();
-            let result = with_binary_deadline(Instant::now() + Duration::from_millis(20),
-                client.send_raw_with_response(UNANSWERED_CODE, Bytes::new())).await;
+            let result = with_binary_deadline(
+                Instant::now() + Duration::from_millis(20),
+                client.send_raw_with_response(UNANSWERED_CODE, Bytes::new()),
+            )
+            .await;
             assert_eq!(result, Err(IggyError::TransientNotCommitted));
             client.ping().await.unwrap();
             assert!(tokio::runtime::Handle::try_current().is_err());
             client.shutdown().await.unwrap();
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
     });
 }
 
 #[test]
-fn given_feature_enabled_when_constructing_clients_should_preserve_defaults_and_reject_tls_downgrade() {
+fn given_feature_enabled_when_constructing_clients_should_preserve_defaults_and_reject_tls_downgrade()
+ {
     let default = TcpClient::default();
     assert!(matches!(default.driver.runtime(), Runtime::Tokio));
-    let config = Arc::new(TcpClientConfig { tls_enabled: true, ..Default::default() });
-    assert!(matches!(CompioTcpClient::create(config), Err(IggyError::FeatureUnavailable)));
+    let config = Arc::new(TcpClientConfig {
+        tls_enabled: true,
+        ..Default::default()
+    });
+    assert!(matches!(
+        CompioTcpClient::create(config),
+        Err(IggyError::FeatureUnavailable)
+    ));
     assert!(CompioTcpClient::from_connection_string("http://localhost:3000").is_err());
     assert!(tokio::runtime::Handle::try_current().is_err());
 }

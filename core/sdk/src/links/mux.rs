@@ -200,12 +200,17 @@ impl MuxLink {
         let request = frame.header.request;
         let unbound = frame.header.session == 0;
         let _unbound_turn = if unbound {
-            let turn = self.runtime.timeout_at(deadline, self.shared.unbound.lock()).await;
+            let turn = self
+                .runtime
+                .timeout_at(deadline, self.shared.unbound.lock())
+                .await;
             Some(turn.map_err(|_| IggyError::NotConnected)?)
         } else {
             None
         };
-        let _permit = self.runtime.timeout_at(deadline, self.shared.permits.acquire())
+        let _permit = self
+            .runtime
+            .timeout_at(deadline, self.shared.permits.acquire())
             .await
             .map_err(|_| IggyError::NotConnected)?
             .map_err(|_| IggyError::NotConnected)?;
@@ -343,7 +348,12 @@ impl MuxLink {
             writer: runtime.spawn(writer(frames, Arc::clone(&shared))),
             reader: runtime.spawn(reader(Arc::clone(&shared))),
         };
-        Self { runtime, shared, queue, tasks }
+        Self {
+            runtime,
+            shared,
+            queue,
+            tasks,
+        }
     }
 
     fn channel(
@@ -669,12 +679,6 @@ async fn read_tcp_reply<R: AsyncRead + Unpin>(
         header,
         body: body.freeze(),
     })
-}
-
-fn reply_body_len(header: &[u8; HEADER_SIZE]) -> io::Result<usize> {
-    response_size(header)
-        .map(|size| size - HEADER_SIZE)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame shorter than its header"))
 }
 
 async fn write_websocket<S: AsyncRead + AsyncWrite + Unpin>(

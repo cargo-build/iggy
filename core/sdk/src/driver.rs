@@ -95,31 +95,33 @@ pub(crate) struct DeferredLease<'a> {
 
 impl<'a> DeferredLease<'a> {
     pub(crate) async fn acquire(
+        runtime: Runtime,
         client: &'a Semaphore,
         deadline: Instant,
     ) -> Result<Self, IggyError> {
-        timeout_at(deadline, async {
-            // Queued work from one consumer must not reserve every client slot.
-            let consumer = match DEFERRED_CONSUMER_CAPACITY.try_with(Arc::clone) {
-                Ok(capacity) => Some(
-                    capacity
-                        .acquire_owned()
-                        .await
-                        .map_err(|_| IggyError::ClientShutdown)?,
-                ),
-                Err(_) => None,
-            };
-            let client = client
-                .acquire()
-                .await
-                .map_err(|_| IggyError::ClientShutdown)?;
-            Ok(Self {
-                _client: client,
-                _consumer: consumer,
+        runtime
+            .timeout_at(deadline, async {
+                // Queued work from one consumer must not reserve every client slot.
+                let consumer = match DEFERRED_CONSUMER_CAPACITY.try_with(Arc::clone) {
+                    Ok(capacity) => Some(
+                        capacity
+                            .acquire_owned()
+                            .await
+                            .map_err(|_| IggyError::ClientShutdown)?,
+                    ),
+                    Err(_) => None,
+                };
+                let client = client
+                    .acquire()
+                    .await
+                    .map_err(|_| IggyError::ClientShutdown)?;
+                Ok(Self {
+                    _client: client,
+                    _consumer: consumer,
+                })
             })
-        })
-        .await
-        .map_err(|_| IggyError::TransientNotAccepted)?
+            .await
+            .map_err(|_| IggyError::TransientNotAccepted)?
     }
 }
 
@@ -417,7 +419,12 @@ impl OperationDriver {
     /// Waits for one of the [`MAX_DEFERRED_REQUESTS`] slots. The wait spends
     /// the request budget, so a frame encodes its budget after the lease.
     async fn deferred_lease(&self) -> Result<DeferredLease<'_>, IggyError> {
-        DeferredLease::acquire(&self.deferred_requests, operation_deadline()).await
+        DeferredLease::acquire(
+            self.runtime(),
+            &self.deferred_requests,
+            operation_deadline(),
+        )
+        .await
     }
 
     pub(crate) async fn send_raw(
@@ -1442,7 +1449,11 @@ impl OperationDriver {
     /// Reads the roster on `link`, so the next attempt finds the metadata
     /// primary that the roster names. Returns whether the read succeeded.
     async fn read_roster(&self, link: &Arc<Link>, deadline: Instant) -> bool {
-        match self.runtime().timeout_at(deadline, self.links.refresh_roster(link)).await {
+        match self
+            .runtime()
+            .timeout_at(deadline, self.links.refresh_roster(link))
+            .await
+        {
             Ok(Ok(())) => true,
             Ok(Err(error)) => {
                 debug!("A roster read failed: {error}");

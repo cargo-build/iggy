@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use iggy_common::{ClientState, ClusterNode, IggyError, TransportProtocol};
 use crate::runtime::Runtime;
+use iggy_common::{ClientState, ClusterNode, IggyError, TransportProtocol};
 use std::future::Future;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -112,7 +112,8 @@ async fn resolve_all(addr: String, runtime: Runtime) -> Option<Vec<SocketAddr>> 
     // comparison runs on the connect and redirect paths, the redirect one
     // inside the caller's request deadline, and `lookup_host` has no deadline
     // of its own.
-    let lookup = runtime.timeout(RESOLVE_TIMEOUT, runtime.lookup_host(&addr))
+    let lookup = runtime
+        .timeout(RESOLVE_TIMEOUT, runtime.lookup_host(&addr))
         .await
         .ok()?;
     let resolved = lookup.ok()?;
@@ -329,7 +330,14 @@ mod tests {
             !is_same_address_with("iggy-leader:8091", "172.28.0.101:8092", resolve_bdd_leader)
                 .await
         );
-        assert!(!is_same_address("no-such-host.invalid:8090", "127.0.0.1:8090", Runtime::Tokio).await);
+        assert!(
+            !is_same_address(
+                "no-such-host.invalid:8090",
+                "127.0.0.1:8090",
+                Runtime::Tokio
+            )
+            .await
+        );
     }
 
     #[tokio::test]

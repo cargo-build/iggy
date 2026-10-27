@@ -15,8 +15,8 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use bytes::Bytes;
 use crate::runtime::Runtime;
+use bytes::Bytes;
 use iggy_common::{IggyError, PendingOperationsConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -93,7 +93,8 @@ impl PendingOperations {
                     }));
                 }
             }
-            self.runtime.timeout_at(deadline, available)
+            self.runtime
+                .timeout_at(deadline, available)
                 .await
                 .map_err(|_| IggyError::TransientNotAccepted)?;
         }

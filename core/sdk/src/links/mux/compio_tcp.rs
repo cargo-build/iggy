@@ -18,10 +18,11 @@
 //! Owned-buffer TCP tasks sharing the ordinary multiplexed link state.
 
 use super::{LinkTasks, MuxLink, MuxShared, QueuedFrame};
-use crate::links::{Frame, Reply};
+use crate::links::Reply;
 use crate::runtime::Runtime;
 use bytes::Bytes;
 use compio::BufResult;
+use compio::buf::{IntoInner, IoBuf};
 use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::net::TcpStream;
 use iggy_binary_protocol::consensus::HEADER_SIZE;
@@ -43,7 +44,12 @@ impl MuxLink {
             writer: Runtime::spawn_compio_local(write(writer, frames, Arc::clone(&shared))),
             reader: Runtime::spawn_compio_local(read(reader, Arc::clone(&shared))),
         };
-        Self { runtime: Runtime::Compio, shared, queue, tasks }
+        Self {
+            runtime: Runtime::Compio,
+            shared,
+            queue,
+            tasks,
+        }
     }
 }
 
@@ -95,7 +101,8 @@ async fn read_reply(reader: &mut TcpStream, shared: &MuxShared) -> io::Result<Re
         let mut remaining = body_len;
         while remaining > 0 {
             let take = remaining.min(DRAIN_CHUNK);
-            let BufResult(result, _) = reader.read_exact(vec![0u8; take]).await;
+            let buffer = Vec::<u8>::with_capacity(take).slice(..take);
+            let BufResult(result, _) = reader.read_exact(buffer).await;
             result?;
             remaining -= take;
         }
@@ -104,10 +111,11 @@ async fn read_reply(reader: &mut TcpStream, shared: &MuxShared) -> io::Result<Re
             body: Bytes::new(),
         });
     }
-    let BufResult(result, body) = reader.read_exact(vec![0u8; body_len]).await;
+    let body = Vec::<u8>::with_capacity(body_len).slice(..body_len);
+    let BufResult(result, body) = reader.read_exact(body).await;
     result?;
     Ok(Reply {
         header,
-        body: Bytes::from(body),
+        body: Bytes::from(body.into_inner()),
     })
 }
