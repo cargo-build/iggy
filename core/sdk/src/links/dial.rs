@@ -20,8 +20,8 @@
 use super::Link;
 use super::mux::MuxLink;
 use super::quic::QuicLink;
-use crate::tcp::tcp_tls_verifier::NoServerVerification;
 use crate::runtime::Runtime;
+use crate::tcp::tcp_tls_verifier::NoServerVerification;
 use iggy_common::{
     IggyError, QuicClientConfig, TcpClientConfig, TransportProtocol, WebSocketClientConfig,
 };
@@ -81,7 +81,9 @@ impl Dialer {
             match self {
                 Self::Tcp(config) => dial_tcp(config, endpoint).await,
                 #[cfg(all(feature = "io-uring", target_os = "linux"))]
-                Self::CompioTcp(config) => dial_compio_tcp(Arc::clone(config), endpoint.to_owned()).await,
+                Self::CompioTcp(config) => {
+                    dial_compio_tcp(Arc::clone(config), endpoint.to_owned()).await
+                }
                 Self::Quic {
                     config,
                     endpoint: quic,
@@ -92,10 +94,13 @@ impl Dialer {
                 Self::Scripted(dialer) => dialer.dial(endpoint).await,
             }
         };
-        self.runtime().timeout(DIAL_TIMEOUT, dial).await.unwrap_or_else(|_| {
-            error!("Connecting to {endpoint} took longer than {DIAL_TIMEOUT:?}.");
-            Err(IggyError::CannotEstablishConnection)
-        })
+        self.runtime()
+            .timeout(DIAL_TIMEOUT, dial)
+            .await
+            .unwrap_or_else(|_| {
+                error!("Connecting to {endpoint} took longer than {DIAL_TIMEOUT:?}.");
+                Err(IggyError::CannotEstablishConnection)
+            })
     }
 
     fn runtime(&self) -> Runtime {
@@ -119,17 +124,23 @@ impl Dialer {
 }
 
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
-async fn dial_compio_tcp(config: Arc<TcpClientConfig>, endpoint: String) -> Result<Link, IggyError> {
-    let is_iouring = compio::runtime::Runtime::try_with_current(|runtime| runtime.driver_type().is_iouring())
-        .map_err(|_| IggyError::InvalidConfiguration)?;
+async fn dial_compio_tcp(
+    config: Arc<TcpClientConfig>,
+    endpoint: String,
+) -> Result<Link, IggyError> {
+    let is_iouring =
+        compio::runtime::Runtime::try_with_current(|runtime| runtime.driver_type().is_iouring())
+            .map_err(|_| IggyError::InvalidConfiguration)?;
     if !is_iouring {
         return Err(IggyError::FeatureUnavailable);
     }
     compio::runtime::spawn(async move {
-        let stream = compio::net::TcpStream::connect(&endpoint).await.map_err(|error| {
-            error!("Failed to connect to {endpoint}: {error}");
-            IggyError::CannotEstablishConnection
-        })?;
+        let stream = compio::net::TcpStream::connect(&endpoint)
+            .await
+            .map_err(|error| {
+                error!("Failed to connect to {endpoint}: {error}");
+                IggyError::CannotEstablishConnection
+            })?;
         let peer = stream.peer_addr().map_err(|error| {
             error!("Failed to read the address of {endpoint}: {error}");
             IggyError::CannotEstablishConnection

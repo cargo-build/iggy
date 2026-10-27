@@ -33,6 +33,7 @@ use super::{
     pause_before_retry,
 };
 use crate::SDK_VERSION;
+use crate::runtime::{AbortHandle, task_id};
 use crate::session_owner::{SessionEpoch, SessionOwner};
 use async_broadcast::{Receiver, Sender};
 use futures::{FutureExt, future::join_all};
@@ -52,10 +53,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
-use crate::runtime::{AbortHandle, task_id};
+use tokio::time::Instant;
 #[cfg(test)]
 use tokio::time::sleep;
-use tokio::time::Instant;
 use tracing::{info, warn};
 
 /// Dials that run at once, for one client.
@@ -441,12 +441,15 @@ impl ReplicaLinks {
 
     /// Reads the roster on `link` and rebuilds the slots from it.
     pub(crate) async fn refresh_roster(&self, link: &Arc<Link>) -> Result<(), IggyError> {
-        self.shared.session.runtime().timeout_at(
-            iggy_common::binary_operation_deadline(),
-            self.shared.refresh_roster(link),
-        )
-        .await
-        .map_err(|_| IggyError::TransientNotAccepted)?
+        self.shared
+            .session
+            .runtime()
+            .timeout_at(
+                iggy_common::binary_operation_deadline(),
+                self.shared.refresh_roster(link),
+            )
+            .await
+            .map_err(|_| IggyError::TransientNotAccepted)?
     }
 
     pub(crate) fn subscribe(&self) -> Receiver<DiagnosticEvent> {
@@ -915,7 +918,8 @@ impl LinksShared {
             if !matches!(
                 error,
                 IggyError::TransientNotCommitted | IggyError::TransientNotAccepted
-            ) || !pause_before_retry(self.session.runtime(), retry, deadline, rand::random()).await
+            ) || !pause_before_retry(self.session.runtime(), retry, deadline, rand::random())
+                .await
             {
                 return Err(error);
             }
@@ -1081,7 +1085,10 @@ impl LinksShared {
         endpoint: String,
         adopted: Option<Arc<Link>>,
     ) -> AbortHandle {
-        self.session.runtime().spawn(Arc::clone(self).run_slot(id, endpoint, adopted)).abort_handle()
+        self.session
+            .runtime()
+            .spawn(Arc::clone(self).run_slot(id, endpoint, adopted))
+            .abort_handle()
     }
 
     /// Restarts each slot without a link using its initial reconnect jitter.

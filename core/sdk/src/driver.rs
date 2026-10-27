@@ -925,7 +925,11 @@ impl OperationDriver {
     /// Reads the roster on `link`, so the next attempt finds the metadata
     /// primary that the roster names. Returns whether the read succeeded.
     async fn read_roster(&self, link: &Arc<Link>, deadline: Instant) -> bool {
-        match self.runtime().timeout_at(deadline, self.links.refresh_roster(link)).await {
+        match self
+            .runtime()
+            .timeout_at(deadline, self.links.refresh_roster(link))
+            .await
+        {
             Ok(Ok(())) => true,
             Ok(Err(error)) => {
                 debug!("A roster read failed: {error}");

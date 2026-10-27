@@ -30,10 +30,10 @@ use std::time::Duration;
 
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
 use compio::net::ToSocketAddrsAsync;
-use futures::future::{AbortHandle as FutureAbortHandle, Abortable};
-use futures::TryFutureExt;
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
 use futures::FutureExt;
+use futures::TryFutureExt;
+use futures::future::{AbortHandle as FutureAbortHandle, Abortable};
 use tokio::sync::oneshot;
 use tokio::time::Instant;
 
@@ -114,7 +114,10 @@ impl Runtime {
                 ),
                 Self::Compio => futures::future::Either::Right(
                     match std::time::Instant::now().checked_add(duration) {
-                        Some(deadline) => futures::future::Either::Left(compio_timeout_at(Instant::from_std(deadline), future)),
+                        Some(deadline) => futures::future::Either::Left(compio_timeout_at(
+                            Instant::from_std(deadline),
+                            future,
+                        )),
                         None => futures::future::Either::Right(future.map(Ok)),
                     },
                 ),
@@ -265,8 +268,15 @@ pub(crate) fn task_id() -> Option<u64> {
 fn next_task_id() -> u64 {
     let mut current = NEXT_TASK_ID.load(Ordering::Relaxed);
     loop {
-        let next = current.checked_add(1).expect("runtime task identity space exhausted");
-        match NEXT_TASK_ID.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+        let next = current
+            .checked_add(1)
+            .expect("runtime task identity space exhausted");
+        match NEXT_TASK_ID.compare_exchange_weak(
+            current,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => return current,
             Err(observed) => current = observed,
         }
@@ -318,7 +328,10 @@ impl Drop for Completion {
 }
 
 #[cfg(all(feature = "io-uring", target_os = "linux"))]
-fn compio_timeout_at<F: Future>(deadline: Instant, future: F) -> impl Future<Output = Result<F::Output, Elapsed>> {
+fn compio_timeout_at<F: Future>(
+    deadline: Instant,
+    future: F,
+) -> impl Future<Output = Result<F::Output, Elapsed>> {
     // Nested operation futures must not be embedded twice in an async match state.
     let mut future = Box::pin(future);
     async move {
@@ -331,7 +344,8 @@ fn compio_timeout_at<F: Future>(deadline: Instant, future: F) -> impl Future<Out
                 return Poll::Ready(Err(Elapsed));
             }
             timer.as_mut().poll(context).map(|()| Err(Elapsed))
-        }).await
+        })
+        .await
     }
 }
 

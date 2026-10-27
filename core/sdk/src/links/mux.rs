@@ -159,19 +159,26 @@ impl MuxLink {
         let request = frame.header.request;
         let unbound = frame.header.session == 0;
         let _unbound_turn = if unbound {
-            let turn = self.runtime.timeout_at(deadline, self.shared.unbound.lock()).await;
+            let turn = self
+                .runtime
+                .timeout_at(deadline, self.shared.unbound.lock())
+                .await;
             Some(turn.map_err(|_| IggyError::NotConnected)?)
         } else {
             None
         };
-        let _permit = self.runtime.timeout_at(deadline, self.shared.permits.acquire())
+        let _permit = self
+            .runtime
+            .timeout_at(deadline, self.shared.permits.acquire())
             .await
             .map_err(|_| IggyError::NotConnected)?
             .map_err(|_| IggyError::NotConnected)?;
         let (waiter, reply) = oneshot::channel();
         let mut entry = self.shared.wait_for(request, waiter)?;
         if !matches!(
-            self.runtime.timeout_at(deadline, self.queue.send(frame)).await,
+            self.runtime
+                .timeout_at(deadline, self.queue.send(frame))
+                .await,
             Ok(Ok(()))
         ) {
             return Err(IggyError::NotConnected);
@@ -236,7 +243,12 @@ impl MuxLink {
             writer: runtime.spawn(writer(frames, Arc::clone(&shared))),
             reader: runtime.spawn(reader(Arc::clone(&shared))),
         };
-        Self { runtime, shared, queue, tasks }
+        Self {
+            runtime,
+            shared,
+            queue,
+            tasks,
+        }
     }
 
     fn channel(peer: SocketAddr) -> (Arc<MuxShared>, mpsc::Sender<Frame>, mpsc::Receiver<Frame>) {

@@ -36,7 +36,6 @@ macro_rules! impl_binary_client_helpers {
                 self.driver.links().connection_address()
             }
         }
-
     };
 }
 
@@ -179,12 +178,14 @@ macro_rules! impl_binary_client {
             ) -> Result<iggy_common::IdentityInfo, iggy_common::IggyError> {
                 let attempt = self.driver.begin_sign_in()?;
                 let result = iggy_common::with_binary_lineage(Some(attempt.lineage()), async {
-                    self.driver.runtime().timeout_at(
-                        iggy_common::binary_operation_deadline(),
-                        iggy_common::binary_sign_in(self, credentials),
-                    )
-                    .await
-                    .map_err(|_| iggy_common::IggyError::TransientNotAccepted)?
+                    self.driver
+                        .runtime()
+                        .timeout_at(
+                            iggy_common::binary_operation_deadline(),
+                            iggy_common::binary_sign_in(self, credentials),
+                        )
+                        .await
+                        .map_err(|_| iggy_common::IggyError::TransientNotAccepted)?
                 })
                 .await;
                 if result.is_ok() {

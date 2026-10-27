@@ -22,6 +22,7 @@ use crate::links::{Frame, Reply};
 use crate::runtime::Runtime;
 use bytes::Bytes;
 use compio::BufResult;
+use compio::buf::{IntoInner, IoBuf};
 use compio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use compio::net::TcpStream;
 use iggy_binary_protocol::consensus::HEADER_SIZE;
@@ -40,7 +41,12 @@ impl MuxLink {
             writer: Runtime::spawn_compio_local(write(writer, frames, Arc::clone(&shared))),
             reader: Runtime::spawn_compio_local(read(reader, Arc::clone(&shared))),
         };
-        Self { runtime: Runtime::Compio, shared, queue, tasks }
+        Self {
+            runtime: Runtime::Compio,
+            shared,
+            queue,
+            tasks,
+        }
     }
 }
 
@@ -81,7 +87,11 @@ async fn read_reply(reader: &mut TcpStream) -> io::Result<Reply> {
     let BufResult(result, header) = reader.read_exact([0; HEADER_SIZE]).await;
     result?;
     let body_len = reply_body_len(&header)?;
-    let BufResult(result, body) = reader.read_exact(vec![0; body_len]).await;
+    let body = Vec::<u8>::with_capacity(body_len).slice(..body_len);
+    let BufResult(result, body) = reader.read_exact(body).await;
     result?;
-    Ok(Reply { header, body: Bytes::from(body) })
+    Ok(Reply {
+        header,
+        body: Bytes::from(body.into_inner()),
+    })
 }
