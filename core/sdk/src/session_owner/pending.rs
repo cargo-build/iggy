@@ -16,14 +16,16 @@
 // under the License.
 
 use bytes::Bytes;
+use crate::runtime::Runtime;
 use iggy_common::{IggyError, PendingOperationsConfig};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::Notify;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 #[derive(Debug)]
 pub(super) struct PendingOperations {
+    runtime: Runtime,
     limits: PendingOperationsConfig,
     usage: Mutex<Usage>,
     available: Notify,
@@ -52,8 +54,9 @@ struct FrozenBody {
 }
 
 impl PendingOperations {
-    pub(super) fn new(limits: PendingOperationsConfig) -> Self {
+    pub(super) fn new(limits: PendingOperationsConfig, runtime: Runtime) -> Self {
         Self {
+            runtime,
             limits,
             usage: Mutex::default(),
             available: Notify::new(),
@@ -90,7 +93,7 @@ impl PendingOperations {
                     }));
                 }
             }
-            timeout_at(deadline, available)
+            self.runtime.timeout_at(deadline, available)
                 .await
                 .map_err(|_| IggyError::TransientNotAccepted)?;
         }

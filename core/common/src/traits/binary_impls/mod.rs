@@ -48,7 +48,6 @@ use iggy_binary_protocol::{
     ClientVersionInfo, IGGY_PROTOCOL_VERSION, MAX_WIRE_NAME_LENGTH, WireDecode, WireName,
 };
 use secrecy::ExposeSecret;
-use tokio::time::timeout_at;
 
 /// Send one `UpdateResource` patch for `target`.
 async fn update_resource<B: BinaryClient + ?Sized>(
@@ -163,9 +162,13 @@ pub async fn binary_sign_in<B: BinaryClient>(
 /// authenticated user. Connection establishment shares the login deadline and
 /// finishes before the caller captures the session fence.
 pub(crate) async fn logout_before_relogin<B: BinaryClient>(client: &B) -> Result<(), IggyError> {
-    timeout_at(crate::binary_operation_deadline(), client.prepare_sign_in())
-        .await
-        .map_err(|_| IggyError::TransientNotAccepted)??;
+    tokio::select! {
+        biased;
+        result = client.prepare_sign_in() => result?,
+        () = client.operation_timer(crate::binary_operation_deadline()) => {
+            return Err(IggyError::TransientNotAccepted);
+        }
+    }
     if client.get_state().await == ClientState::Authenticated
         || client.session_identity().await.is_ok()
     {

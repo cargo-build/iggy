@@ -18,6 +18,7 @@
 //! Connection plumbing shared by the TCP, QUIC and WebSocket clients.
 
 use crate::session_owner::SessionOwner;
+use crate::runtime::Runtime;
 use crate::vsr::{decode_reply, encode_request_header};
 use bytes::Bytes;
 use iggy_binary_protocol::consensus::{HEADER_SIZE, RequestHeader};
@@ -27,7 +28,7 @@ use iggy_common::IggyError;
 use mux::MuxLink;
 use quic::QuicLink;
 use std::time::Duration;
-use tokio::time::{Instant, sleep};
+use tokio::time::Instant;
 
 pub(crate) mod connect;
 mod dial;
@@ -168,12 +169,12 @@ pub(crate) fn backoff(attempt: u32, base: Duration, cap: Duration, draw: f64) ->
 /// Sleeps the [`backoff`] pause before retry `retry` of a request. Returns
 /// false instead if the retry cannot start before `deadline`. `draw` is the
 /// random fraction of the pause.
-pub(crate) async fn pause_before_retry(retry: u32, deadline: Instant, draw: f64) -> bool {
+pub(crate) async fn pause_before_retry(runtime: Runtime, retry: u32, deadline: Instant, draw: f64) -> bool {
     let pause = backoff(retry, RETRY_BACKOFF_BASE, RETRY_BACKOFF_MAX, draw);
     if Instant::now() + pause >= deadline {
         return false;
     }
-    sleep(pause).await;
+    runtime.sleep(pause).await;
     // A timer fires on a whole millisecond, so a sleep can end at the
     // deadline.
     Instant::now() < deadline
@@ -312,7 +313,7 @@ mod tests {
             // Half the first pause, so a draw near one half sleeps to the
             // deadline and a larger draw reaches past it.
             let deadline = Instant::now() + RETRY_BACKOFF_BASE / 2;
-            let retry = pause_before_retry(0, deadline, draw).await;
+            let retry = pause_before_retry(Runtime::Tokio, 0, deadline, draw).await;
             assert!(Instant::now() <= deadline, "draw {draw}");
             if retry {
                 retries += 1;

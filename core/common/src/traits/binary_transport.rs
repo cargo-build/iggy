@@ -98,6 +98,12 @@ pub fn binary_operation_deadline() -> Instant {
 
 #[async_trait]
 pub trait BinaryTransport {
+    /// Supplies the transport's operation clock without changing the Tokio default.
+    #[doc(hidden)]
+    fn operation_timer(&self, deadline: Instant) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep_until(deadline))
+    }
+
     #[doc(hidden)]
     fn operation_lineage(&self) -> Option<BinaryOperationLineage> {
         None

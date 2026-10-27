@@ -58,7 +58,37 @@ are retired. HTTP clients use server-side forwarding.
 cargo add iggy
 ```
 
-All four transports are included; this crate declares no optional Cargo features.
+All four existing transports remain included by default. On Linux, the optional
+`io-uring` feature adds a plain-TCP `iggy::io_uring::CompioTcpClient` driven by
+the caller's compio runtime.
+
+### Optional compio/io_uring client
+
+Enable `io-uring` and construct `CompioTcpClient::from_connection_string(...)`
+inside a compio application. It implements the existing binary command traits,
+including authentication, stream/topic operations, send/poll and explicit
+operation recovery, while sharing the default clients' session and routing code.
+The client requires compio's io_uring driver and starts no Tokio runtime. Tokio
+remains a dependency for runtime-independent shared utilities and default clients.
+
+This client currently supports plain TCP. TLS configurations and a non-io_uring
+driver return `FeatureUnavailable`; they do not silently select another backend.
+Existing `IggyClient`, high-level producers/consumers, QUIC, WebSocket and HTTP
+clients keep their Tokio requirement. Drive `keepalive()` periodically according
+to the configured heartbeat interval to maintain/restart replica links, and call
+`shutdown()` explicitly before dropping the compio runtime.
+
+The executable example creates a unique stream/topic, publishes and polls one
+message, validates its payload/receipt, deletes its resources and shuts down:
+
+```bash
+cargo run -p iggy --features io-uring --example compio_roundtrip -- \
+  'iggy://iggy:iggy@127.0.0.1:8090'
+```
+
+Use a matching local development broker with those credentials. The separate
+`compio_runtime_probe` example checks native TCP/timer task mechanics without
+connecting to an Iggy server.
 
 The durable session API adds required `session_identity` and `session_bind_secret`
 methods to `VsrSessionControl`. External transport implementations must provide

@@ -22,6 +22,7 @@
 //! never leaves a frame half written or half read on the connection.
 
 use crate::links::{Frame, Reply};
+use crate::runtime::{Runtime, Task};
 use crate::vsr::{decode_eviction, eviction_reason, peek_command, reply_request_id, response_size};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -38,13 +39,15 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{debug, error, trace};
+
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+mod compio_tcp;
 
 /// Frames queued for the writer task before a sender waits for room.
 const LINK_WRITE_QUEUE: usize = 32;
@@ -62,6 +65,7 @@ type Waiter = oneshot::Sender<Result<Reply, IggyError>>;
 /// its tasks, which closes the connection.
 #[derive(Debug)]
 pub(crate) struct MuxLink {
+    runtime: Runtime,
     shared: Arc<MuxShared>,
     queue: mpsc::Sender<Frame>,
     tasks: LinkTasks,
@@ -88,8 +92,8 @@ struct Pending {
 
 #[derive(Debug)]
 struct LinkTasks {
-    writer: JoinHandle<()>,
-    reader: JoinHandle<()>,
+    writer: Task,
+    reader: Task,
 }
 
 impl Drop for LinkTasks {
@@ -155,26 +159,26 @@ impl MuxLink {
         let request = frame.header.request;
         let unbound = frame.header.session == 0;
         let _unbound_turn = if unbound {
-            let turn = timeout_at(deadline, self.shared.unbound.lock()).await;
+            let turn = self.runtime.timeout_at(deadline, self.shared.unbound.lock()).await;
             Some(turn.map_err(|_| IggyError::NotConnected)?)
         } else {
             None
         };
-        let _permit = timeout_at(deadline, self.shared.permits.acquire())
+        let _permit = self.runtime.timeout_at(deadline, self.shared.permits.acquire())
             .await
             .map_err(|_| IggyError::NotConnected)?
             .map_err(|_| IggyError::NotConnected)?;
         let (waiter, reply) = oneshot::channel();
         let mut entry = self.shared.wait_for(request, waiter)?;
         if !matches!(
-            timeout_at(deadline, self.queue.send(frame)).await,
+            self.runtime.timeout_at(deadline, self.queue.send(frame)).await,
             Ok(Ok(()))
         ) {
             return Err(IggyError::NotConnected);
         }
         *sent = true;
         entry.close_if_abandoned = unbound;
-        match timeout_at(deadline, reply).await {
+        match self.runtime.timeout_at(deadline, reply).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(IggyError::Disconnected),
             Err(_) => {
@@ -205,13 +209,16 @@ impl MuxLink {
     /// reader does not report the end of the connection as an error.
     pub(crate) async fn shutdown(self) {
         let Self {
+            runtime,
             shared,
             queue,
             mut tasks,
         } = self;
         shared.close(&IggyError::Disconnected);
         drop(queue);
-        let _ = timeout(SHUTDOWN_TIMEOUT, &mut tasks.writer).await;
+        if !tasks.writer.is_finished() {
+            let _ = runtime.timeout(SHUTDOWN_TIMEOUT, &mut tasks.writer).await;
+        }
     }
 
     fn start<Writer, Reader>(
@@ -223,6 +230,16 @@ impl MuxLink {
         Writer: Future<Output = ()> + Send + 'static,
         Reader: Future<Output = ()> + Send + 'static,
     {
+        let (shared, queue, frames) = Self::channel(peer);
+        let runtime = Runtime::Tokio;
+        let tasks = LinkTasks {
+            writer: runtime.spawn(writer(frames, Arc::clone(&shared))),
+            reader: runtime.spawn(reader(Arc::clone(&shared))),
+        };
+        Self { runtime, shared, queue, tasks }
+    }
+
+    fn channel(peer: SocketAddr) -> (Arc<MuxShared>, mpsc::Sender<Frame>, mpsc::Receiver<Frame>) {
         let shared = Arc::new(MuxShared {
             peer,
             no_session_eviction: AtomicBool::new(false),
@@ -235,15 +252,7 @@ impl MuxLink {
             closed: watch::Sender::new(false),
         });
         let (queue, frames) = mpsc::channel(LINK_WRITE_QUEUE);
-        let tasks = LinkTasks {
-            writer: tokio::spawn(writer(frames, Arc::clone(&shared))),
-            reader: tokio::spawn(reader(Arc::clone(&shared))),
-        };
-        Self {
-            shared,
-            queue,
-            tasks,
-        }
+        (shared, queue, frames)
     }
 }
 
@@ -452,9 +461,7 @@ async fn read_tcp<R: AsyncRead + Unpin>(mut reader: R, shared: Arc<MuxShared>) {
 async fn read_tcp_reply<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Reply> {
     let mut header = [0; HEADER_SIZE];
     reader.read_exact(&mut header).await?;
-    let size = response_size(&header)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame shorter than its header"))?;
-    let body_len = size - HEADER_SIZE;
+    let body_len = reply_body_len(&header)?;
     let mut body = BytesMut::with_capacity(body_len);
     // The limit stops a read at the end of the frame, even when the buffer
     // got more capacity than it asked for.
@@ -468,6 +475,12 @@ async fn read_tcp_reply<R: AsyncRead + Unpin>(reader: &mut R) -> io::Result<Repl
         header,
         body: body.freeze(),
     })
+}
+
+fn reply_body_len(header: &[u8; HEADER_SIZE]) -> io::Result<usize> {
+    response_size(header)
+        .map(|size| size - HEADER_SIZE)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame shorter than its header"))
 }
 
 async fn write_websocket<S: AsyncRead + AsyncWrite + Unpin>(
@@ -544,6 +557,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{DuplexStream, duplex};
+    use tokio::time::timeout;
     use tokio_tungstenite::{accept_async, client_async};
 
     const BOUND_SESSION: u64 = 3;

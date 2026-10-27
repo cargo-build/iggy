@@ -52,8 +52,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::sync::{Notify, Semaphore};
-use tokio::task::AbortHandle;
-use tokio::time::{Instant, sleep, timeout_at};
+use crate::runtime::{AbortHandle, task_id};
+#[cfg(test)]
+use tokio::time::sleep;
+use tokio::time::Instant;
 use tracing::{info, warn};
 
 /// Dials that run at once, for one client.
@@ -439,7 +441,7 @@ impl ReplicaLinks {
 
     /// Reads the roster on `link` and rebuilds the slots from it.
     pub(crate) async fn refresh_roster(&self, link: &Arc<Link>) -> Result<(), IggyError> {
-        timeout_at(
+        self.shared.session.runtime().timeout_at(
             iggy_common::binary_operation_deadline(),
             self.shared.refresh_roster(link),
         )
@@ -627,7 +629,7 @@ impl LinksShared {
         let pause = self.policy.pause(pass);
         info!("No endpoint signed in. Pass {pass} starts in {pause:?}.");
         tokio::select! {
-            () = sleep(pause) => {}
+            () = self.session.runtime().sleep(pause) => {}
             () = stop => {}
         }
         Ok(())
@@ -757,7 +759,7 @@ impl LinksShared {
         };
         let shared = Arc::clone(self);
         let link = Arc::clone(link);
-        let watcher = tokio::spawn(async move {
+        let watcher = self.session.runtime().spawn(async move {
             shared.hold(&link).await;
             shared.bootstrap_down(&link);
         });
@@ -913,7 +915,7 @@ impl LinksShared {
             if !matches!(
                 error,
                 IggyError::TransientNotCommitted | IggyError::TransientNotAccepted
-            ) || !pause_before_retry(retry, deadline, rand::random()).await
+            ) || !pause_before_retry(self.session.runtime(), retry, deadline, rand::random()).await
             {
                 return Err(error);
             }
@@ -1066,7 +1068,7 @@ impl LinksShared {
             return wanted.keys().next().map(|id| (link, *id));
         }
         for (id, replica) in wanted {
-            if is_same_address(&endpoint, replica).await {
+            if is_same_address(&endpoint, replica, self.session.runtime()).await {
                 return Some((link, *id));
             }
         }
@@ -1079,7 +1081,7 @@ impl LinksShared {
         endpoint: String,
         adopted: Option<Arc<Link>>,
     ) -> AbortHandle {
-        tokio::spawn(Arc::clone(self).run_slot(id, endpoint, adopted)).abort_handle()
+        self.session.runtime().spawn(Arc::clone(self).run_slot(id, endpoint, adopted)).abort_handle()
     }
 
     /// Restarts each slot without a link using its initial reconnect jitter.
@@ -1108,7 +1110,7 @@ impl LinksShared {
                     if retry > 0 && !self.policy.allows(retry) {
                         break;
                     }
-                    sleep(self.policy.pause(retry)).await;
+                    self.session.runtime().sleep(self.policy.pause(retry)).await;
                     match self.open(id, &endpoint, &mut signs_in_at).await {
                         Some(link) => link,
                         None => {
@@ -1380,7 +1382,7 @@ impl Table {
 
     /// The slot `id`, while the current task runs it.
     fn own_slot(&mut self, id: u8) -> Option<&mut Slot> {
-        let current = tokio::task::try_id()?;
+        let current = task_id()?;
         self.slots
             .get_mut(&id)
             .filter(|slot| slot.task.as_ref().is_some_and(|task| task.id() == current))

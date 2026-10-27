@@ -195,16 +195,22 @@
 //!
 //! # Async runtime
 //!
-//! The SDK is async and runs on the [Tokio] runtime. Note that this is a hard
-//! requirement and not optional. The SDK uses [quinn] (for QUIC), [reqwest] (for HTTP),
+//! The default SDK clients are async and require the [Tokio] runtime.
+//! These clients use [quinn] (for QUIC), [reqwest] (for HTTP),
 //! [tokio-tungstenite] (for WebSocket) and [tokio-rustls] (for TLS) which all build on
 //! Tokio.
 //! The SDK also spawns its own background work with [`tokio::spawn`] (the
 //! [`IggyClient::connect`] heartbeat, and the [`IggyProducer`] and
 //! [`IggyConsumer`] tasks) and drives timeouts, retries, and poll intervals with
 //! [`tokio::time`].
-//! Note that dropping down to the low-level transport clients does not change this.
-//! **Thus, everything you do with the Rust SDK must happen inside a Tokio runtime.**
+//! Dropping down to the default low-level transport clients does not change this.
+//! **Operations on these client types must happen inside a Tokio runtime.**
+//!
+//! On Linux, the optional `io-uring` feature adds
+//! `io_uring::CompioTcpClient` for plain TCP on a caller-owned compio runtime,
+//! without starting Tokio. It shares the binary command/session machinery;
+//! the high-level producer/consumer helpers still require Tokio. See the
+//! feature module for its transport and maintenance contract.
 //!
 //! ```no_run
 //! use iggy::prelude::*;
@@ -299,9 +305,12 @@ pub mod consumer_ext;
 mod diagnostic_events;
 mod driver;
 pub mod http;
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+pub mod io_uring;
 mod links;
 pub mod prelude;
 pub mod quic;
+mod runtime;
 pub mod session;
 mod session_owner;
 pub mod stream_builder;

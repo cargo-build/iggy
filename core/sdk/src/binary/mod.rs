@@ -17,7 +17,7 @@
 
 pub use iggy_common::{BinaryClient, BinaryTransport};
 
-macro_rules! impl_binary_client {
+macro_rules! impl_binary_client_helpers {
     ($client:ty) => {
         impl $client {
             pub(crate) fn retains_operation(&self, op: u64) -> bool {
@@ -37,6 +37,11 @@ macro_rules! impl_binary_client {
             }
         }
 
+    };
+}
+
+macro_rules! impl_binary_client {
+    ($client:ty) => {
         #[async_trait::async_trait]
         impl iggy_common::Client for $client {
             async fn connect(&self) -> Result<(), iggy_common::IggyError> {
@@ -77,6 +82,13 @@ macro_rules! impl_binary_client {
 
         #[async_trait::async_trait]
         impl iggy_common::BinaryTransport for $client {
+            fn operation_timer(
+                &self,
+                deadline: tokio::time::Instant,
+            ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+                Box::pin(self.driver.runtime().sleep_until(deadline))
+            }
+
             fn operation_lineage(&self) -> Option<iggy_common::BinaryOperationLineage> {
                 Some(self.driver.session().operation_lineage())
             }
@@ -167,7 +179,7 @@ macro_rules! impl_binary_client {
             ) -> Result<iggy_common::IdentityInfo, iggy_common::IggyError> {
                 let attempt = self.driver.begin_sign_in()?;
                 let result = iggy_common::with_binary_lineage(Some(attempt.lineage()), async {
-                    tokio::time::timeout_at(
+                    self.driver.runtime().timeout_at(
                         iggy_common::binary_operation_deadline(),
                         iggy_common::binary_sign_in(self, credentials),
                     )
@@ -266,3 +278,4 @@ macro_rules! impl_binary_client {
 }
 
 pub(crate) use impl_binary_client;
+pub(crate) use impl_binary_client_helpers;

@@ -274,7 +274,10 @@ impl FakeCluster {
         Ok(client)
     }
 
-    async fn serve(self: Arc<Self>, endpoint: String, stream: DuplexStream) {
+    pub(crate) async fn serve<S>(self: Arc<Self>, endpoint: String, stream: S)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let (mut reader, mut writer) = tokio::io::split(stream);
         let (replies, responses) = flume::unbounded::<Vec<u8>>();
         let receive = async move {

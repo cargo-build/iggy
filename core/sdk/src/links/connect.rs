@@ -16,6 +16,7 @@
 // under the License.
 
 use iggy_common::{ClientState, ClusterNode, IggyError, TransportProtocol};
+use crate::runtime::Runtime;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::str::FromStr;
@@ -73,8 +74,8 @@ pub(crate) fn is_same_spelling(addr1: &str, addr2: &str) -> bool {
 /// rather than `ToSocketAddrs`: name lookup is a blocking `getaddrinfo`, and
 /// this is called from the connect and redirect paths, where stalling a
 /// runtime worker on a slow resolver would stall every task sharing it.
-pub(crate) async fn is_same_address(addr1: &str, addr2: &str) -> bool {
-    is_same_address_with(addr1, addr2, resolve_all).await
+pub(crate) async fn is_same_address(addr1: &str, addr2: &str, runtime: Runtime) -> bool {
+    is_same_address_with(addr1, addr2, |address| resolve_all(address, runtime)).await
 }
 
 /// [`is_same_address`] against a caller-provided resolver, so the fallback can
@@ -106,15 +107,15 @@ where
 /// Every socket address a host:port spelling resolves to, `None` when the
 /// resolver does not know the name or does not answer in time (which then
 /// compares unequal, at worst costing one extra dial).
-async fn resolve_all(addr: String) -> Option<Vec<SocketAddr>> {
+async fn resolve_all(addr: String, runtime: Runtime) -> Option<Vec<SocketAddr>> {
     // A resolver that never answers must not own the request budget: this
     // comparison runs on the connect and redirect paths, the redirect one
     // inside the caller's request deadline, and `lookup_host` has no deadline
     // of its own.
-    let lookup = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host(addr))
+    let lookup = runtime.timeout(RESOLVE_TIMEOUT, runtime.lookup_host(&addr))
         .await
         .ok()?;
-    let resolved: Vec<SocketAddr> = lookup.ok()?.collect();
+    let resolved = lookup.ok()?;
     (!resolved.is_empty()).then_some(resolved)
 }
 
@@ -283,10 +284,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_is_same_address() {
-        assert!(is_same_address("127.0.0.1:8090", "127.0.0.1:8090").await);
-        assert!(is_same_address("localhost:8090", "127.0.0.1:8090").await);
-        assert!(!is_same_address("127.0.0.1:8090", "127.0.0.1:8091").await);
-        assert!(!is_same_address("192.168.1.1:8090", "127.0.0.1:8090").await);
+        assert!(is_same_address("127.0.0.1:8090", "127.0.0.1:8090", Runtime::Tokio).await);
+        assert!(is_same_address("localhost:8090", "127.0.0.1:8090", Runtime::Tokio).await);
+        assert!(!is_same_address("127.0.0.1:8090", "127.0.0.1:8091", Runtime::Tokio).await);
+        assert!(!is_same_address("192.168.1.1:8090", "127.0.0.1:8090", Runtime::Tokio).await);
     }
 
     /// A stand-in resolver: the BDD cluster's spelling of one node, which no
@@ -328,7 +329,7 @@ mod tests {
             !is_same_address_with("iggy-leader:8091", "172.28.0.101:8092", resolve_bdd_leader)
                 .await
         );
-        assert!(!is_same_address("no-such-host.invalid:8090", "127.0.0.1:8090").await);
+        assert!(!is_same_address("no-such-host.invalid:8090", "127.0.0.1:8090", Runtime::Tokio).await);
     }
 
     #[tokio::test]

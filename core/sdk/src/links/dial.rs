@@ -21,6 +21,7 @@ use super::Link;
 use super::mux::MuxLink;
 use super::quic::QuicLink;
 use crate::tcp::tcp_tls_verifier::NoServerVerification;
+use crate::runtime::Runtime;
 use iggy_common::{
     IggyError, QuicClientConfig, TcpClientConfig, TransportProtocol, WebSocketClientConfig,
 };
@@ -33,7 +34,6 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::{TcpStream, lookup_host};
 use tokio::sync::OnceCell;
-use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::{Connector, client_async_tls_with_config};
 use tracing::error;
@@ -45,6 +45,8 @@ pub(crate) const DIAL_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub(crate) enum Dialer {
     Tcp(Arc<TcpClientConfig>),
+    #[cfg(all(feature = "io-uring", target_os = "linux"))]
+    CompioTcp(Arc<TcpClientConfig>),
     /// Every QUIC link of one client shares `endpoint`.
     Quic {
         config: Arc<QuicClientConfig>,
@@ -60,6 +62,8 @@ impl Dialer {
     pub(crate) fn protocol(&self) -> TransportProtocol {
         match self {
             Self::Tcp(_) => TransportProtocol::Tcp,
+            #[cfg(all(feature = "io-uring", target_os = "linux"))]
+            Self::CompioTcp(_) => TransportProtocol::Tcp,
             Self::Quic { .. } => TransportProtocol::Quic,
             Self::WebSocket(_) => TransportProtocol::WebSocket,
             #[cfg(test)]
@@ -76,6 +80,8 @@ impl Dialer {
         let dial = async {
             match self {
                 Self::Tcp(config) => dial_tcp(config, endpoint).await,
+                #[cfg(all(feature = "io-uring", target_os = "linux"))]
+                Self::CompioTcp(config) => dial_compio_tcp(Arc::clone(config), endpoint.to_owned()).await,
                 Self::Quic {
                     config,
                     endpoint: quic,
@@ -86,10 +92,20 @@ impl Dialer {
                 Self::Scripted(dialer) => dialer.dial(endpoint).await,
             }
         };
-        timeout(DIAL_TIMEOUT, dial).await.unwrap_or_else(|_| {
+        self.runtime().timeout(DIAL_TIMEOUT, dial).await.unwrap_or_else(|_| {
             error!("Connecting to {endpoint} took longer than {DIAL_TIMEOUT:?}.");
             Err(IggyError::CannotEstablishConnection)
         })
+    }
+
+    fn runtime(&self) -> Runtime {
+        match self {
+            #[cfg(all(feature = "io-uring", target_os = "linux"))]
+            Self::CompioTcp(_) => Runtime::Compio,
+            Self::Tcp(_) | Self::Quic { .. } | Self::WebSocket(_) => Runtime::Tokio,
+            #[cfg(test)]
+            Self::Scripted(_) => Runtime::Tokio,
+        }
     }
 
     /// Waits until every QUIC connection of the client is gone.
@@ -100,6 +116,34 @@ impl Dialer {
             endpoint.wait_idle().await;
         }
     }
+}
+
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+async fn dial_compio_tcp(config: Arc<TcpClientConfig>, endpoint: String) -> Result<Link, IggyError> {
+    let is_iouring = compio::runtime::Runtime::try_with_current(|runtime| runtime.driver_type().is_iouring())
+        .map_err(|_| IggyError::InvalidConfiguration)?;
+    if !is_iouring {
+        return Err(IggyError::FeatureUnavailable);
+    }
+    compio::runtime::spawn(async move {
+        let stream = compio::net::TcpStream::connect(&endpoint).await.map_err(|error| {
+            error!("Failed to connect to {endpoint}: {error}");
+            IggyError::CannotEstablishConnection
+        })?;
+        let peer = stream.peer_addr().map_err(|error| {
+            error!("Failed to read the address of {endpoint}: {error}");
+            IggyError::CannotEstablishConnection
+        })?;
+        if let Err(error) = stream.set_nodelay(config.nodelay) {
+            error!("Failed to set the nodelay option for {endpoint}: {error}, continuing...");
+        }
+        Ok(Link::Mux(MuxLink::compio_tcp(stream, peer)))
+    })
+    .await
+    .map_err(|error| {
+        error!("The compio TCP dial task failed: {error}");
+        IggyError::CannotEstablishConnection
+    })?
 }
 
 async fn dial_tcp(config: &TcpClientConfig, endpoint: &str) -> Result<Link, IggyError> {
