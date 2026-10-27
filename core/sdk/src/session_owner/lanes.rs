@@ -47,7 +47,7 @@ use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum LaneKey {
@@ -344,7 +344,7 @@ impl SessionOwner {
                 Arc::clone(&lane.gate),
             )
         };
-        let guard = timeout_at(deadline, gate.lock_owned())
+        let guard = self.runtime().timeout_at(deadline, gate.lock_owned())
             .await
             .map_err(|_| IggyError::TransientNotAccepted)?;
         ticket.guard = Some(guard);
@@ -415,7 +415,7 @@ impl SessionOwner {
                 })?;
             ticket.progress.push(progress);
         }
-        let guard = timeout_at(deadline, gate.lock_owned())
+        let guard = self.runtime().timeout_at(deadline, gate.lock_owned())
             .await
             .map_err(|_| IggyError::OperationUncertain(op))?;
         ticket.guard = Some(guard);

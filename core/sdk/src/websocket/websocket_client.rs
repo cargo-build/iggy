@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::binary::impl_binary_client;
+use crate::binary::{impl_binary_client, impl_binary_client_helpers};
 use crate::driver::OperationDriver;
 use crate::links::{Dialer, ReconnectPolicy, ReplicaLinks};
 use crate::session_owner::SessionOwner;
@@ -38,6 +38,7 @@ impl Default for WebSocketClient {
 }
 
 impl_binary_client!(WebSocketClient);
+impl_binary_client_helpers!(WebSocketClient);
 
 impl WebSocketClient {
     /// Creates a WebSocket client from an Iggy connection string.

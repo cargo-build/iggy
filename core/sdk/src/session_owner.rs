@@ -16,6 +16,7 @@
 // under the License.
 
 use crate::session::ConsensusSession;
+use crate::runtime::Runtime;
 use iggy_binary_protocol::HEADER_SIZE;
 use iggy_binary_protocol::requests::system::SessionIdentity;
 use iggy_binary_protocol::requests::users::login_register::BindSecret;
@@ -47,6 +48,7 @@ pub(crate) use lanes::{LaneKey, LaneTicket, RetainedOperation};
 /// the other way round. No lock is held across an await.
 #[derive(Debug)]
 pub(crate) struct SessionOwner {
+    runtime: Runtime,
     /// The initial client id identifies this owner even after session replacement.
     operation_owner: u128,
     session: Mutex<ConsensusSession>,
@@ -117,21 +119,34 @@ impl SessionOwner {
         auto_login: AutoLogin,
         pending_operations: PendingOperationsConfig,
     ) -> Self {
+        Self::with_runtime(auto_login, pending_operations, Runtime::Tokio)
+    }
+
+    pub(crate) fn with_runtime(
+        auto_login: AutoLogin,
+        pending_operations: PendingOperationsConfig,
+        runtime: Runtime,
+    ) -> Self {
         let session = ConsensusSession::new();
         Self {
+            runtime,
             operation_owner: session.client_id(),
             session: Mutex::new(session),
             epoch: watch::Sender::new(SessionEpoch::default()),
             lanes: Mutex::default(),
             proved: Mutex::new(ProvedOutcomes::new(pending_operations.max_operations)),
-            pending: Arc::new(PendingOperations::new(pending_operations)),
-            pending_fetches: Arc::new(PendingOperations::new(pending_operations)),
+            pending: Arc::new(PendingOperations::new(pending_operations, runtime)),
+            pending_fetches: Arc::new(PendingOperations::new(pending_operations, runtime)),
             consumer_group_state: Arc::default(),
             metadata_watermark: AtomicU64::new(0),
             sign_in: Mutex::default(),
             auto_login,
             producer_ids: Mutex::default(),
         }
+    }
+
+    pub(crate) fn runtime(&self) -> Runtime {
+        self.runtime
     }
 
     pub(crate) fn consumer_group_state(&self) -> Arc<ConsumerGroupClientState> {

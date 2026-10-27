@@ -24,6 +24,7 @@ use crate::links::{
     Frame, LateReply, Link, ReplicaLinks, Reply, Target, committing_cancel_requested, lost_link,
     pause_before_retry, read_reply,
 };
+use crate::runtime::Runtime;
 use crate::session_owner::{LaneKey, LaneTicket, RetainedOperation, SessionEpoch, SessionOwner};
 use crate::vsr::decode_reply_for;
 use bytes::Bytes;
@@ -62,7 +63,7 @@ use iggy_common::{
 use route_cache::RouteCache;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, SemaphorePermit};
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 use tracing::debug;
 
 mod route_cache;
@@ -167,6 +168,10 @@ impl OperationDriver {
 
     pub(crate) fn session(&self) -> &Arc<SessionOwner> {
         &self.session
+    }
+
+    pub(crate) fn runtime(&self) -> Runtime {
+        self.session.runtime()
     }
 
     pub(crate) fn partition_count(
@@ -595,7 +600,7 @@ impl OperationDriver {
                     return Err(call.expire());
                 }
                 Next::Pause => {
-                    if !call.pause().await {
+                    if !call.pause(self.runtime()).await {
                         return Err(call.expire());
                     }
                 }
@@ -847,7 +852,7 @@ impl OperationDriver {
                 || epoch.bound
                 || (requires_session && !epoch.sign_in_owed)
         });
-        match timeout_at(call.deadline, ready).await {
+        match self.runtime().timeout_at(call.deadline, ready).await {
             Ok(Ok(epoch)) if epoch.bound && epoch.lineage == started.lineage => Ok(()),
             // The old caller lineage ended or its automatic sign-in was refused.
             Ok(_) => Err(Next::Fail(IggyError::Unauthenticated)),
@@ -1437,7 +1442,7 @@ impl OperationDriver {
     /// Reads the roster on `link`, so the next attempt finds the metadata
     /// primary that the roster names. Returns whether the read succeeded.
     async fn read_roster(&self, link: &Arc<Link>, deadline: Instant) -> bool {
-        match timeout_at(deadline, self.links.refresh_roster(link)).await {
+        match self.runtime().timeout_at(deadline, self.links.refresh_roster(link)).await {
             Ok(Ok(())) => true,
             Ok(Err(error)) => {
                 debug!("A roster read failed: {error}");
@@ -1846,10 +1851,10 @@ impl Call {
 
     /// Sleeps before the next attempt. Returns false instead if the attempt
     /// cannot start before the deadline.
-    async fn pause(&mut self) -> bool {
+    async fn pause(&mut self, runtime: Runtime) -> bool {
         let retry = self.retries;
         self.retries = retry.saturating_add(1);
-        pause_before_retry(retry, self.deadline, rand::random()).await
+        pause_before_retry(runtime, retry, self.deadline, rand::random()).await
     }
 
     /// Ends the call with the outcome that it proved.

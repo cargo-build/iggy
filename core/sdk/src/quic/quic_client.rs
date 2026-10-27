@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-use crate::binary::impl_binary_client;
+use crate::binary::{impl_binary_client, impl_binary_client_helpers};
 use crate::driver::OperationDriver;
 use crate::links::{Dialer, ReconnectPolicy, ReplicaLinks};
 use crate::quic::skip_server_verification::SkipServerVerification;
@@ -49,6 +49,7 @@ impl Default for QuicClient {
 }
 
 impl_binary_client!(QuicClient);
+impl_binary_client_helpers!(QuicClient);
 
 impl QuicClient {
     pub fn new(

@@ -22,6 +22,7 @@
 //! never leaves a frame half written or half read on the connection.
 
 use crate::links::{Frame, LateReply, Reply, committing_cancelled};
+use crate::runtime::{Runtime, Task};
 use crate::vsr::{decode_eviction, eviction_reason, peek_command, reply_request_id, response_size};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use futures_util::stream::{SplitSink, SplitStream};
@@ -39,13 +40,15 @@ use std::sync::{Arc, Mutex as StdMutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{Mutex, Semaphore, mpsc, oneshot, watch};
-use tokio::task::JoinHandle;
-use tokio::time::{Instant, timeout, timeout_at};
+use tokio::time::Instant;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tracing::{debug, error, trace};
+
+#[cfg(all(feature = "io-uring", target_os = "linux"))]
+mod compio_tcp;
 
 /// Frames queued for the writer task before a sender waits for room.
 const LINK_WRITE_QUEUE: usize = 32;
@@ -68,6 +71,7 @@ struct QueuedFrame {
 /// its tasks, which closes the connection.
 #[derive(Debug)]
 pub(crate) struct MuxLink {
+    runtime: Runtime,
     shared: Arc<MuxShared>,
     queue: mpsc::Sender<QueuedFrame>,
     tasks: LinkTasks,
@@ -75,6 +79,7 @@ pub(crate) struct MuxLink {
 
 #[derive(Debug)]
 struct MuxShared {
+    runtime: Runtime,
     peer: SocketAddr,
     no_session_eviction: AtomicBool,
     pending: StdMutex<Pending>,
@@ -122,8 +127,8 @@ impl Awaiting {
 
 #[derive(Debug)]
 struct LinkTasks {
-    writer: JoinHandle<()>,
-    reader: JoinHandle<()>,
+    writer: Task,
+    reader: Task,
 }
 
 impl Drop for LinkTasks {
@@ -195,18 +200,20 @@ impl MuxLink {
         let request = frame.header.request;
         let unbound = frame.header.session == 0;
         let _unbound_turn = if unbound {
-            let turn = timeout_at(deadline, self.shared.unbound.lock()).await;
+            let turn = self.runtime.timeout_at(deadline, self.shared.unbound.lock()).await;
             Some(turn.map_err(|_| IggyError::NotConnected)?)
         } else {
             None
         };
-        let _permit = timeout_at(deadline, self.shared.permits.acquire())
+        let _permit = self.runtime.timeout_at(deadline, self.shared.permits.acquire())
             .await
             .map_err(|_| IggyError::NotConnected)?
             .map_err(|_| IggyError::NotConnected)?;
         let (waiter, reply) = oneshot::channel();
         let cancellation = if let Some(header) = frame.header.deferred_cancellation() {
-            let permit = timeout_at(deadline, self.queue.clone().reserve_owned())
+            let permit = self
+                .runtime
+                .timeout_at(deadline, self.queue.clone().reserve_owned())
                 .await
                 .map_err(|_| IggyError::NotConnected)?
                 .map_err(|_| IggyError::NotConnected)?;
@@ -220,7 +227,9 @@ impl MuxLink {
         } else {
             None
         };
-        let write_permit = timeout_at(deadline, self.shared.write_permits.acquire())
+        let write_permit = self
+            .runtime
+            .timeout_at(deadline, self.shared.write_permits.acquire())
             .await
             .map_err(|_| IggyError::NotConnected)?
             .map_err(|_| IggyError::NotConnected)?;
@@ -229,14 +238,15 @@ impl MuxLink {
             .wait_for(request, waiter, frame.response_body_limit())?;
         entry.reply = Some(reply);
         if !matches!(
-            timeout_at(
-                deadline,
-                self.queue.send(QueuedFrame {
-                    frame,
-                    uses_write_permit: true,
-                })
-            )
-            .await,
+            self.runtime
+                .timeout_at(
+                    deadline,
+                    self.queue.send(QueuedFrame {
+                        frame,
+                        uses_write_permit: true,
+                    }),
+                )
+                .await,
             Ok(Ok(()))
         ) {
             return Err(IggyError::NotConnected);
@@ -253,24 +263,26 @@ impl MuxLink {
             return Err(IggyError::Disconnected);
         };
         let cancellation = &mut entry.cancellation;
-        let replied = timeout_at(deadline, async {
-            if committing {
-                tokio::select! {
-                    biased;
-                    replied = &mut *reply => return replied,
-                    () = committing_cancelled() => {}
+        let replied = self
+            .runtime
+            .timeout_at(deadline, async {
+                if committing {
+                    tokio::select! {
+                        biased;
+                        replied = &mut *reply => return replied,
+                        () = committing_cancelled() => {}
+                    }
+                    // The server answers the request once more, which settles it.
+                    if let Some((permit, frame)) = cancellation.take() {
+                        permit.send(QueuedFrame {
+                            frame,
+                            uses_write_permit: false,
+                        });
+                    }
                 }
-                // The server answers the request once more, which settles it.
-                if let Some((permit, frame)) = cancellation.take() {
-                    permit.send(QueuedFrame {
-                        frame,
-                        uses_write_permit: false,
-                    });
-                }
-            }
-            reply.await
-        })
-        .await;
+                reply.await
+            })
+            .await;
         // The caller takes the reply, or ends at its deadline without one.
         entry.late = None;
         match replied {
@@ -304,13 +316,16 @@ impl MuxLink {
     /// reader does not report the end of the connection as an error.
     pub(crate) async fn shutdown(self) {
         let Self {
+            runtime,
             shared,
             queue,
             mut tasks,
         } = self;
         shared.close(&IggyError::Disconnected);
         drop(queue);
-        let _ = timeout(SHUTDOWN_TIMEOUT, &mut tasks.writer).await;
+        if !tasks.writer.is_finished() {
+            let _ = runtime.timeout(SHUTDOWN_TIMEOUT, &mut tasks.writer).await;
+        }
     }
 
     fn start<Writer, Reader>(
@@ -322,7 +337,25 @@ impl MuxLink {
         Writer: Future<Output = ()> + Send + 'static,
         Reader: Future<Output = ()> + Send + 'static,
     {
+        let runtime = Runtime::Tokio;
+        let (shared, queue, frames) = Self::channel(runtime, peer);
+        let tasks = LinkTasks {
+            writer: runtime.spawn(writer(frames, Arc::clone(&shared))),
+            reader: runtime.spawn(reader(Arc::clone(&shared))),
+        };
+        Self { runtime, shared, queue, tasks }
+    }
+
+    fn channel(
+        runtime: Runtime,
+        peer: SocketAddr,
+    ) -> (
+        Arc<MuxShared>,
+        mpsc::Sender<QueuedFrame>,
+        mpsc::Receiver<QueuedFrame>,
+    ) {
         let shared = Arc::new(MuxShared {
+            runtime,
             peer,
             no_session_eviction: AtomicBool::new(false),
             pending: StdMutex::new(Pending {
@@ -337,15 +370,7 @@ impl MuxLink {
         // At most MAX_PENDING_PER_LINK slots are held for cancellation. The
         // remaining slots let the FIFO drain, while write_permits bounds payloads.
         let (queue, frames) = mpsc::channel(LINK_WRITE_QUEUE + MAX_PENDING_PER_LINK);
-        let tasks = LinkTasks {
-            writer: tokio::spawn(writer(frames, Arc::clone(&shared))),
-            reader: tokio::spawn(reader(Arc::clone(&shared))),
-        };
-        Self {
-            shared,
-            queue,
-            tasks,
-        }
+        (shared, queue, frames)
     }
 }
 
@@ -536,7 +561,7 @@ impl Drop for PendingEntry<'_> {
             match reply.try_recv() {
                 Ok(result) => late(result),
                 Err(oneshot::error::TryRecvError::Empty) => {
-                    tokio::spawn(async move {
+                    self.shared.runtime.spawn(async move {
                         late(reply.await.unwrap_or(Err(IggyError::Disconnected)));
                     });
                 }
@@ -646,6 +671,12 @@ async fn read_tcp_reply<R: AsyncRead + Unpin>(
     })
 }
 
+fn reply_body_len(header: &[u8; HEADER_SIZE]) -> io::Result<usize> {
+    response_size(header)
+        .map(|size| size - HEADER_SIZE)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame shorter than its header"))
+}
+
 async fn write_websocket<S: AsyncRead + AsyncWrite + Unpin>(
     mut sink: SplitSink<WebSocketStream<S>, Message>,
     mut frames: mpsc::Receiver<QueuedFrame>,
@@ -721,6 +752,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::io::{DuplexStream, duplex};
+    use tokio::time::timeout;
     use tokio_tungstenite::{accept_async, client_async};
 
     const BOUND_SESSION: u64 = 3;

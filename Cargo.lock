@@ -7106,6 +7106,7 @@ dependencies = [
  "bon",
  "bytemuck",
  "bytes",
+ "compio",
  "dashmap",
  "flume",
  "futures",

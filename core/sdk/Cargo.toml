@@ -29,6 +29,9 @@ documentation = "https://iggy.apache.org/docs"
 repository = "https://github.com/apache/iggy"
 readme = "README.md"
 
+[features]
+io-uring = ["dep:compio"]
+
 [dependencies]
 async-broadcast = { workspace = true }
 async-dropper = { workspace = true }
@@ -61,6 +64,9 @@ tracing = { workspace = true }
 trait-variant = { workspace = true }
 webpki-roots = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+compio = { workspace = true, features = ["bytes"], optional = true }
+
 [dev-dependencies]
 mockall = { workspace = true }
 rcgen = { workspace = true }
@@ -68,3 +74,11 @@ tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true
+
+[[example]]
+name = "compio_runtime_probe"
+required-features = ["io-uring"]
+
+[[example]]
+name = "compio_roundtrip"
+required-features = ["io-uring"]
